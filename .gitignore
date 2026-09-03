@@ -16,6 +16,9 @@ terraform.rc
 tfplan
 *.tfplan
 
+# API tokens sourced by scripts/hostinger-dns.sh
+.env
+
 # WireGuard private keys and client configs - never commit these.
 keys/
 clients/

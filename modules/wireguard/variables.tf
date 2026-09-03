@@ -82,10 +82,20 @@ variable "ssh_key_name" {
 
 variable "vpn_hostname" {
   description = <<-EOT
-    FQDN to point at the server, e.g. "vpn.example.com". A public Route 53
-    hosted zone of exactly this name must already exist; scripts/setup-dns.sh
-    creates one and prints the NS records to add at your registrar. When set,
-    client configs use this name instead of a bare IP and survive rebuilds.
+    FQDN clients dial, e.g. "vpn.example.com". Baked into the client configs so
+    they survive rebuilds. Whoever hosts the zone has to repoint this name at
+    each new instance; set route53_zone_name to have Terraform do it, or use
+    scripts/hostinger-dns.sh if DNS stays at Hostinger.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "route53_zone_name" {
+  description = <<-EOT
+    Name of an existing public Route 53 hosted zone containing vpn_hostname,
+    e.g. "example.com" or a delegated "vpn.example.com". Terraform then manages
+    the A record. Leave null when DNS lives elsewhere.
   EOT
   type        = string
   default     = null

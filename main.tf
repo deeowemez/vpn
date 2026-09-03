@@ -18,6 +18,7 @@ module "vpn" {
   wg_port               = var.wg_port
   idle_shutdown_minutes = var.idle_shutdown_minutes
   vpn_hostname          = var.vpn_hostname
+  route53_zone_name     = var.route53_zone_name
   server_private_key    = local.server_private_key
   peer_stanzas          = local.peer_stanzas
   wg_mtu                = var.wg_mtu

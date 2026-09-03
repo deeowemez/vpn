@@ -42,10 +42,20 @@ variable "client_count" {
 
 variable "vpn_hostname" {
   description = <<-EOT
-    Stable hostname for the VPN endpoint, e.g. "vpn.deeowemez.space". Requires
-    a public Route 53 hosted zone of the same name - run scripts/setup-dns.sh
-    once to create it and delegate the subdomain at your registrar. Leave null
-    to dial the raw IP, which changes on every rebuild.
+    Stable hostname clients dial, e.g. "vpn.example.com". Generate configs
+    against it with scripts/gen-keys.sh and they survive every rebuild. The
+    record itself is repointed after each build - by Terraform if
+    route53_zone_name is set, otherwise by scripts/hostinger-dns.sh. Leave null
+    to dial the raw IP, which changes every time.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "route53_zone_name" {
+  description = <<-EOT
+    Existing public Route 53 hosted zone holding vpn_hostname. Set this only if
+    your DNS is on Route 53; leave null when the registrar hosts it.
   EOT
   type        = string
   default     = null

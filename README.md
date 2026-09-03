@@ -66,39 +66,46 @@ at whatever it happens to be.
 
 ## One-time setup
 
-### 1. Delegate a subdomain to Route 53
+### 1. Create the DNS record
 
-Your domain's DNS can stay wherever it is. Only the VPN subdomain moves.
+Add one A record at whoever hosts your DNS, pointing the VPN subdomain at a
+placeholder:
 
-```bash
-make dns HOST=vpn.example.com
-```
+| Type | Name | Value | TTL |
+|---|---|---|---|
+| A | `vpn` | `192.0.2.1` | lowest offered (300s at Hostinger) |
 
-This creates a public hosted zone for exactly that name and prints four
-nameservers. Add them at your registrar as **NS records on the `vpn` host** —
-not as a nameserver change for the whole domain. At Hostinger that is
-hPanel → Domains → DNS / Nameservers → Manage DNS records → add four `NS`
-records with Name `vpn`.
+`192.0.2.1` is a reserved documentation address that goes nowhere. It is there
+so the name always resolves to *something*.
 
-Verify before continuing:
+**Edit this record's value before each match; never delete it.** Zones
+typically cache a "no such host" answer for ten minutes, so a deleted record
+would keep failing to resolve well after you rebuilt the server.
 
-```bash
-dig +short NS vpn.example.com     # should list the four AWS nameservers
-```
+Two ways to skip the manual edit:
 
-The script also lowers the zone's SOA negative-caching TTL to 60 seconds.
-Without that, a lookup made while the VPN is torn down would cache the
-"no such host" answer for a day and your next session would fail to resolve.
+- **DNS on Route 53** — set `route53_zone_name` in `terraform.tfvars` and
+  Terraform manages the record itself. `scripts/setup-dns.sh` creates a
+  delegated zone if your registrar can add NS records (Hostinger's editor
+  cannot).
+- **DNS at Hostinger** — `scripts/hostinger-dns.sh` updates the record through
+  Hostinger's API, and `make match` calls it automatically once
+  `HOSTINGER_API_TOKEN` is set (hPanel → Account → API), optionally via a
+  `.env` file. **This script is written against Hostinger's documented API but
+  has not been run against a live token** — try `./scripts/hostinger-dns.sh get
+  <fqdn>` first, and `--dry-run` to see the exact request.
 
 ### 2. Generate the permanent keyset
 
 ```bash
+brew install wireguard-tools        # provides the `wg` key generator
 make keys HOST=vpn.example.com COUNT=3
 ```
 
 This writes `keys/` (consumed by Terraform on every build) and `clients/`
 (your configs). Install those configs on your devices **once** — they stay
-valid for every future match.
+valid for every future match, because both the hostname and the keys are now
+stable.
 
 ### 3. Point Terraform at it
 
@@ -114,7 +121,8 @@ terraform init
 make match      # ~30s to apply, ~60s more for the server to finish booting
 ```
 
-Then switch the VPN on from your device's WireGuard app, or:
+It prints the new IP. Paste that into your `vpn` A record, wait out the TTL,
+then switch the VPN on from your device's WireGuard app, or:
 
 ```bash
 sudo wg-quick up $PWD/clients/client1.conf
