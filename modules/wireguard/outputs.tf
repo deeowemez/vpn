@@ -3,6 +3,11 @@ output "public_ip" {
   value       = aws_instance.this.public_ip
 }
 
+output "endpoint" {
+  description = "What clients dial: the hostname if one is configured, otherwise this session's IP."
+  value       = var.vpn_hostname == null ? aws_instance.this.public_ip : var.vpn_hostname
+}
+
 output "instance_id" {
   description = "EC2 instance ID."
   value       = aws_instance.this.id

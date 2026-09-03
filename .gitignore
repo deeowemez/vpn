@@ -16,6 +16,7 @@ terraform.rc
 tfplan
 *.tfplan
 
-# WireGuard client configs contain private keys - never commit these.
+# WireGuard private keys and client configs - never commit these.
+keys/
 clients/
 *.conf

@@ -7,6 +7,12 @@ name   = "vpn-syd"
 # t4g.medium only if several people are watching at once.
 instance_type = "t4g.small"
 
+# Stable hostname for the tunnel endpoint. Run 'make dns HOST=...' once to
+# create the Route 53 zone, delegate the subdomain at your registrar, then
+# 'make keys HOST=...' to generate configs that never need replacing.
+# Leave commented out to dial the raw IP, which changes on every rebuild.
+# vpn_hostname = "vpn.example.com"
+
 # One config per device you want to connect. Keys are regenerated on every
 # rebuild, so keep this to the devices you actually use.
 client_count = 3

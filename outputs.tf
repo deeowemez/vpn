@@ -3,14 +3,23 @@ output "public_ip" {
   value       = module.vpn.public_ip
 }
 
+output "endpoint" {
+  description = "What your client configs dial."
+  value       = module.vpn.endpoint
+}
+
+output "keyset" {
+  description = "Whether client configs survive rebuilds."
+  value = (
+    local.server_private_key == ""
+    ? "throwaway - run 'make clients' after each build to collect new configs"
+    : "persistent - your existing configs in clients/ keep working"
+  )
+}
+
 output "instance_id" {
   description = "EC2 instance ID."
   value       = module.vpn.instance_id
-}
-
-output "fetch_clients_command" {
-  description = "Pull the generated client configs off the instance over SSM."
-  value       = "./scripts/fetch-clients.sh ${var.region} ${module.vpn.instance_id}"
 }
 
 output "session_manager_command" {

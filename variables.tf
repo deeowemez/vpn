@@ -40,6 +40,17 @@ variable "client_count" {
   }
 }
 
+variable "vpn_hostname" {
+  description = <<-EOT
+    Stable hostname for the VPN endpoint, e.g. "vpn.deeowemez.space". Requires
+    a public Route 53 hosted zone of the same name - run scripts/setup-dns.sh
+    once to create it and delegate the subdomain at your registrar. Leave null
+    to dial the raw IP, which changes on every rebuild.
+  EOT
+  type        = string
+  default     = null
+}
+
 variable "idle_shutdown_minutes" {
   description = <<-EOT
     Terminate the instance after this many minutes with no client handshake.

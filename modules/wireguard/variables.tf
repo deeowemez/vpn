@@ -80,6 +80,38 @@ variable "ssh_key_name" {
   default     = null
 }
 
+variable "vpn_hostname" {
+  description = <<-EOT
+    FQDN to point at the server, e.g. "vpn.example.com". A public Route 53
+    hosted zone of exactly this name must already exist; scripts/setup-dns.sh
+    creates one and prints the NS records to add at your registrar. When set,
+    client configs use this name instead of a bare IP and survive rebuilds.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "server_private_key" {
+  description = <<-EOT
+    WireGuard server private key. Supplying one (from scripts/gen-keys.sh) lets
+    the server keep the same identity across rebuilds, so client configs stay
+    valid. Empty means generate a throwaway key at boot.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "peer_stanzas" {
+  description = <<-EOT
+    Rendered [Peer] blocks appended verbatim to the server's wg0.conf. Produced
+    by scripts/gen-keys.sh as keys/peers.conf. Required when
+    server_private_key is set; ignored otherwise.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "idle_shutdown_minutes" {
   description = <<-EOT
     Terminate the instance after this many minutes with no WireGuard handshake

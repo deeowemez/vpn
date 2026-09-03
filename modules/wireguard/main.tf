@@ -4,6 +4,7 @@ locals {
   # geolocates the same way the traffic does.
   vpc_resolver_ip = cidrhost(var.vpc_cidr, 2)
   server_wg_ip    = cidrhost(var.wg_subnet_cidr, 1)
+  wg_prefix       = join(".", slice(split(".", local.server_wg_ip), 0, 3))
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     wg_port               = var.wg_port
@@ -13,6 +14,9 @@ locals {
     client_count          = var.client_count
     dns_upstream          = local.vpc_resolver_ip
     idle_shutdown_minutes = var.idle_shutdown_minutes
+    server_private_key    = var.server_private_key
+    peer_stanzas          = var.peer_stanzas
+    vpn_endpoint          = var.vpn_hostname == null ? "" : var.vpn_hostname
   })
 }
 
@@ -20,6 +24,23 @@ check "ssh_exposure" {
   assert {
     condition     = !var.enable_ssh || (length(var.allowed_ssh_cidrs) > 0 && !contains(var.allowed_ssh_cidrs, "0.0.0.0/0"))
     error_message = "enable_ssh requires allowed_ssh_cidrs to be set and to exclude 0.0.0.0/0. Prefer SSM Session Manager."
+  }
+}
+
+# A keyset generated against a different tunnel subnet would hand out addresses
+# the server does not route, and the failure looks like a working handshake
+# carrying no traffic.
+check "peer_subnet_matches" {
+  assert {
+    condition     = var.peer_stanzas == "" || can(regex("AllowedIPs = ${local.wg_prefix}\\.", var.peer_stanzas))
+    error_message = "keys/peers.conf hands out addresses outside wg_subnet_cidr (${var.wg_subnet_cidr}). Regenerate with scripts/gen-keys.sh --subnet-prefix ${local.wg_prefix}."
+  }
+}
+
+check "keyset_is_complete" {
+  assert {
+    condition     = (var.server_private_key == "") == (var.peer_stanzas == "")
+    error_message = "server_private_key and peer_stanzas must be set together. Run scripts/gen-keys.sh to produce both."
   }
 }
 

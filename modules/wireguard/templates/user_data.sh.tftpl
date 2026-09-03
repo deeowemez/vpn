@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Bootstraps a WireGuard server. Client configs are left in
-# /etc/wireguard/clients and pulled over SSM by scripts/fetch-clients.sh.
+# Bootstraps a WireGuard server.
+#
+# Two modes. With a keyset supplied (scripts/gen-keys.sh), the server adopts it
+# and the operator's existing client configs keep working across rebuilds.
+# Without one, it generates throwaway keys and configs that
+# scripts/fetch-clients.sh collects over SSM.
+#
 # Log: /var/log/wg-bootstrap.log
 set -euo pipefail
 exec > >(tee -a /var/log/wg-bootstrap.log) 2>&1
@@ -14,21 +19,28 @@ SERVER_IP="${server_wg_ip}"
 CLIENT_COUNT="${client_count}"
 DNS_UPSTREAM="${dns_upstream}"
 IDLE_MINUTES="${idle_shutdown_minutes}"
+SERVER_PRIV_PROVIDED='${server_private_key}'
+ENDPOINT_OVERRIDE='${vpn_endpoint}'
 
 echo "=== wg-bootstrap starting at $(date -Is) ==="
 
 # This stack is ephemeral, so boot time is the thing to optimise. Only the
 # packages actually needed, no recommends, and no AWS CLI - the fetch script
-# reads the configs out over SSM from the operator's machine instead.
+# reads anything required out over SSM from the operator's machine instead.
 apt-get update -y
 apt-get install -y --no-install-recommends wireguard-tools dnsmasq iptables
 
-# No Elastic IP in this design: the address is assigned at launch, so the
-# instance has to look it up rather than have it templated in.
-IMDS_TOKEN="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
-  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")"
-ENDPOINT="$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
-  "http://169.254.169.254/latest/meta-data/public-ipv4")"
+if [ -n "$ENDPOINT_OVERRIDE" ]; then
+  # A DNS name Terraform points at this instance. Stable across rebuilds.
+  ENDPOINT="$ENDPOINT_OVERRIDE"
+else
+  # No Elastic IP in this design: the address is assigned at launch, so the
+  # instance has to look it up rather than have it templated in.
+  IMDS_TOKEN="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 300")"
+  ENDPOINT="$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+    "http://169.254.169.254/latest/meta-data/public-ipv4")"
+fi
 echo "Public endpoint: $ENDPOINT:$WG_PORT"
 
 # Route client traffic, and blackhole IPv6 rather than letting it leak around
@@ -47,10 +59,16 @@ umask 077
 mkdir -p /etc/wireguard/clients
 cd /etc/wireguard
 
-wg genkey > server.key
-wg pubkey < server.key > server.pub
-SERVER_PRIV="$(cat server.key)"
-SERVER_PUB="$(cat server.pub)"
+if [ -n "$SERVER_PRIV_PROVIDED" ]; then
+  SERVER_PRIV="$SERVER_PRIV_PROVIDED"
+  echo "Using the supplied keyset; client configs are already on your devices."
+else
+  wg genkey > server.key
+  wg pubkey < server.key > server.pub
+  SERVER_PRIV="$(cat server.key)"
+  SERVER_PUB="$(cat server.pub)"
+  echo "Generating a throwaway keyset."
+fi
 
 cat > /etc/wireguard/wg0.conf <<SERVERCONF
 [Interface]
@@ -62,18 +80,25 @@ PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEP
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -s $WG_SUBNET -o $WAN_IF -j MASQUERADE
 SERVERCONF
 
-SUBNET_PREFIX="$(echo "$SERVER_IP" | cut -d. -f1-3)"
+if [ -n "$SERVER_PRIV_PROVIDED" ]; then
+  # Peer stanzas were rendered by Terraform from keys/peers.conf, so nothing
+  # here has to parse them.
+  cat >> /etc/wireguard/wg0.conf <<'PEERS'
+${peer_stanzas}
+PEERS
+else
+  SUBNET_PREFIX="$(echo "$SERVER_IP" | cut -d. -f1-3)"
 
-for i in $(seq 1 "$CLIENT_COUNT"); do
-  NAME="client$i"
-  CLIENT_ADDR="$SUBNET_PREFIX.$((i + 1))"
+  for i in $(seq 1 "$CLIENT_COUNT"); do
+    NAME="client$i"
+    CLIENT_ADDR="$SUBNET_PREFIX.$((i + 1))"
 
-  wg genkey > "clients/$NAME.key"
-  wg pubkey < "clients/$NAME.key" > "clients/$NAME.pub"
-  CLIENT_PRIV="$(cat "clients/$NAME.key")"
-  CLIENT_PUB="$(cat "clients/$NAME.pub")"
+    wg genkey > "clients/$NAME.key"
+    wg pubkey < "clients/$NAME.key" > "clients/$NAME.pub"
+    CLIENT_PRIV="$(cat "clients/$NAME.key")"
+    CLIENT_PUB="$(cat "clients/$NAME.pub")"
 
-  cat >> /etc/wireguard/wg0.conf <<PEERCONF
+    cat >> /etc/wireguard/wg0.conf <<PEERCONF
 
 [Peer]
 # $NAME
@@ -81,9 +106,9 @@ PublicKey = $CLIENT_PUB
 AllowedIPs = $CLIENT_ADDR/32
 PEERCONF
 
-  # DNS points at the server's tunnel address so lookups resolve from inside
-  # the AWS region instead of via the client's local resolver.
-  cat > "clients/$NAME.conf" <<CLIENTCONF
+    # DNS points at the server's tunnel address so lookups resolve from inside
+    # the AWS region instead of via the client's local resolver.
+    cat > "clients/$NAME.conf" <<CLIENTCONF
 [Interface]
 PrivateKey = $CLIENT_PRIV
 Address = $CLIENT_ADDR/32
@@ -97,9 +122,10 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 CLIENTCONF
 
-  rm -f "clients/$NAME.key" "clients/$NAME.pub"
-  echo "generated $NAME ($CLIENT_ADDR)"
-done
+    rm -f "clients/$NAME.key" "clients/$NAME.pub"
+    echo "generated $NAME ($CLIENT_ADDR)"
+  done
+fi
 
 # Resolver for tunnel clients. bind-dynamic lets dnsmasq attach to wg0 whenever
 # it appears and keeps it off systemd-resolved's 127.0.0.53 socket.
