@@ -121,14 +121,22 @@ terraform init
 make match      # ~30s to apply, ~60s more for the server to finish booting
 ```
 
-It prints the new IP. Paste that into your `vpn` A record, wait out the TTL,
-then switch the VPN on from your device's WireGuard app, or:
+It prints the new IP. Paste that into your `vpn` A record and wait out the TTL.
+Then connect:
 
 ```bash
-sudo wg-quick up $PWD/clients/client1.conf
-curl https://ifconfig.me      # should be a Sydney address
-sudo wg-quick down $PWD/clients/client1.conf
+make connect        # or: make connect CONF=clients/client3.conf
+make disconnect
 ```
+
+Prefer these over `wg-quick up` directly. The configs are full tunnels
+(`AllowedIPs = 0.0.0.0/0, ::/0`), so every packet goes into `wg0` — pointing
+one at a server that is not running takes the machine offline until you notice
+and run `wg-quick down`. `make connect` refuses to start when the endpoint
+still resolves to the placeholder, and tears the tunnel back down by itself if
+traffic does not flow once it is up.
+
+On a phone, just use the toggle in the WireGuard app.
 
 Afterwards:
 

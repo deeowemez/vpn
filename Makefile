@@ -1,6 +1,7 @@
 REGION ?= ap-southeast-2
+CONF   ?= clients/client1.conf
 
-.PHONY: match up down clients status ip shell init fmt validate plan destroy dns keys dns-update dns-clear
+.PHONY: match up down clients status ip shell init fmt validate plan destroy dns keys dns-update dns-clear connect disconnect
 
 # --- one-time setup ---------------------------------------------------------
 
@@ -35,10 +36,19 @@ up:
 clients:
 	./scripts/fetch-clients.sh $(REGION) $$(terraform output -raw instance_id)
 
-# Tear everything down. Safe to run even if the instance already terminated
-# itself on the idle timer - Terraform reconciles either way. The Route 53
-# hosted zone is not managed here and survives.
-down: dns-clear
+# Connect only once the endpoint resolves to a real server, and roll back
+# automatically if no traffic flows - a full-tunnel config pointed at a server
+# that is not there takes the whole machine offline.
+connect:
+	./scripts/connect.sh $(CONF)
+
+disconnect:
+	@if [ -f $(CONF) ]; then ./scripts/disconnect.sh $(CONF); fi
+
+# Tear everything down. Disconnects first: destroying the server you are
+# routing through would drop you offline mid-command. Safe to run even if the
+# instance already terminated itself on the idle timer.
+down: disconnect dns-clear
 	terraform destroy -auto-approve
 	@if [ ! -f keys/server.key ]; then rm -rf clients; fi
 
