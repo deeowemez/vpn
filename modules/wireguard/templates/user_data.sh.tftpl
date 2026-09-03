@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Bootstraps a WireGuard server and publishes generated client configs to
+# SSM Parameter Store. Runs once, on first boot. Log: /var/log/wg-bootstrap.log
+set -euo pipefail
+exec > >(tee -a /var/log/wg-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+
+REGION="${region}"
+SSM_PREFIX="${ssm_prefix}"
+WG_PORT="${wg_port}"
+WG_MTU="${wg_mtu}"
+WG_SUBNET="${wg_subnet_cidr}"
+SERVER_IP="${server_wg_ip}"
+CLIENT_COUNT="${client_count}"
+DNS_UPSTREAM="${dns_upstream}"
+ENDPOINT="${public_endpoint}"
+
+echo "=== wg-bootstrap starting at $(date -Is) ==="
+
+apt-get update -y
+apt-get install -y wireguard wireguard-tools dnsmasq iptables curl unzip jq
+
+# AWS CLI v2 is not in the Ubuntu archive; the official bundle matches uname -m
+# for both x86_64 and aarch64.
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+  rm -rf /tmp/aws /tmp/awscliv2.zip
+fi
+export PATH="/usr/local/bin:$PATH"
+
+# Route client traffic, and blackhole IPv6 rather than letting it leak around
+# the tunnel to the client's real ISP address.
+cat > /etc/sysctl.d/99-wireguard.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+SYSCTL
+sysctl --system
+
+WAN_IF="$(ip -4 route show default | awk '{print $5}' | head -n1)"
+echo "WAN interface: $WAN_IF"
+
+umask 077
+mkdir -p /etc/wireguard/clients
+cd /etc/wireguard
+
+wg genkey > server.key
+wg pubkey < server.key > server.pub
+SERVER_PRIV="$(cat server.key)"
+SERVER_PUB="$(cat server.pub)"
+
+cat > /etc/wireguard/wg0.conf <<SERVERCONF
+[Interface]
+Address = $SERVER_IP/$(echo "$WG_SUBNET" | cut -d/ -f2)
+ListenPort = $WG_PORT
+PrivateKey = $SERVER_PRIV
+MTU = $WG_MTU
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -s $WG_SUBNET -o $WAN_IF -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -s $WG_SUBNET -o $WAN_IF -j MASQUERADE
+SERVERCONF
+
+SUBNET_PREFIX="$(echo "$SERVER_IP" | cut -d. -f1-3)"
+
+for i in $(seq 1 "$CLIENT_COUNT"); do
+  NAME="client$i"
+  CLIENT_ADDR="$SUBNET_PREFIX.$((i + 1))"
+
+  wg genkey > "clients/$NAME.key"
+  wg pubkey < "clients/$NAME.key" > "clients/$NAME.pub"
+  CLIENT_PRIV="$(cat "clients/$NAME.key")"
+  CLIENT_PUB="$(cat "clients/$NAME.pub")"
+
+  cat >> /etc/wireguard/wg0.conf <<PEERCONF
+
+[Peer]
+# $NAME
+PublicKey = $CLIENT_PUB
+AllowedIPs = $CLIENT_ADDR/32
+PEERCONF
+
+  # DNS points at the server's tunnel address so lookups resolve from inside
+  # the AWS region instead of via the client's local resolver.
+  cat > "clients/$NAME.conf" <<CLIENTCONF
+[Interface]
+PrivateKey = $CLIENT_PRIV
+Address = $CLIENT_ADDR/32
+DNS = $SERVER_IP
+MTU = $WG_MTU
+
+[Peer]
+PublicKey = $SERVER_PUB
+Endpoint = $ENDPOINT:$WG_PORT
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+CLIENTCONF
+
+  aws ssm put-parameter \
+    --region "$REGION" \
+    --name "$SSM_PREFIX/clients/$NAME" \
+    --description "WireGuard client config for $NAME" \
+    --type SecureString \
+    --value "$(cat "clients/$NAME.conf")" \
+    --overwrite
+  echo "published $NAME ($CLIENT_ADDR)"
+done
+
+# Resolver for tunnel clients. bind-dynamic lets dnsmasq attach to wg0 whenever
+# it appears and keeps it off systemd-resolved's 127.0.0.53 socket.
+cat > /etc/dnsmasq.d/wireguard.conf <<DNSMASQ
+listen-address=$SERVER_IP
+bind-dynamic
+no-resolv
+no-hosts
+server=$DNS_UPSTREAM
+domain-needed
+bogus-priv
+cache-size=1000
+DNSMASQ
+
+systemctl enable --now wg-quick@wg0
+systemctl restart dnsmasq
+systemctl enable dnsmasq
+
+aws ssm put-parameter \
+  --region "$REGION" \
+  --name "$SSM_PREFIX/server-public-key" \
+  --type String \
+  --value "$SERVER_PUB" \
+  --overwrite
+
+aws ssm put-parameter \
+  --region "$REGION" \
+  --name "$SSM_PREFIX/status" \
+  --type String \
+  --value "ready endpoint=$ENDPOINT:$WG_PORT clients=$CLIENT_COUNT booted=$(date -Is)" \
+  --overwrite
+
+touch /var/lib/wg-bootstrap.done
+echo "=== wg-bootstrap complete at $(date -Is) ==="
+wg show
