@@ -1,8 +1,7 @@
-data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 resource "aws_iam_role" "instance" {
-  name = "${var.name}-instance"
+  name_prefix = "${var.name}-"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -14,40 +13,16 @@ resource "aws_iam_role" "instance" {
   })
 }
 
-# Session Manager, so the box needs no SSH key and no inbound TCP.
+# Session Manager is the only access path: it gives shell access without SSH or
+# any inbound TCP, and scripts/fetch-clients.sh uses it to read the generated
+# client configs off the instance. Nothing else is needed - the instance never
+# calls AWS APIs itself.
 resource "aws_iam_role_policy_attachment" "ssm_core" {
   role       = aws_iam_role.instance.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Just enough to publish the generated client configs back to Parameter Store.
-resource "aws_iam_role_policy" "publish_client_configs" {
-  name = "publish-client-configs"
-  role = aws_iam_role.instance.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:PutParameter", "ssm:AddTagsToResource"]
-        Resource = "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["kms:Encrypt", "kms:GenerateDataKey"]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "kms:ViaService" = "ssm.${var.region}.amazonaws.com"
-          }
-        }
-      },
-    ]
-  })
-}
-
 resource "aws_iam_instance_profile" "this" {
-  name = "${var.name}-instance"
-  role = aws_iam_role.instance.name
+  name_prefix = "${var.name}-"
+  role        = aws_iam_role.instance.name
 }

@@ -1,16 +1,11 @@
 output "public_ip" {
-  description = "Elastic IP of the VPN server."
-  value       = aws_eip.this.public_ip
+  description = "Auto-assigned public IP of the VPN server. Changes every time the stack is rebuilt."
+  value       = aws_instance.this.public_ip
 }
 
 output "instance_id" {
   description = "EC2 instance ID."
   value       = aws_instance.this.id
-}
-
-output "ssm_parameter_prefix" {
-  description = "SSM path under which client configs are published."
-  value       = local.ssm_prefix
 }
 
 output "security_group_id" {
@@ -26,4 +21,9 @@ output "vpc_id" {
 output "wg_port" {
   description = "WireGuard UDP port."
   value       = var.wg_port
+}
+
+output "idle_shutdown_minutes" {
+  description = "Minutes without a client handshake before the instance terminates itself."
+  value       = var.idle_shutdown_minutes
 }

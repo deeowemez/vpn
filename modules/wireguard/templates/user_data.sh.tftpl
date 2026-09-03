@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# Bootstraps a WireGuard server and publishes generated client configs to
-# SSM Parameter Store. Runs once, on first boot. Log: /var/log/wg-bootstrap.log
+# Bootstraps a WireGuard server. Client configs are left in
+# /etc/wireguard/clients and pulled over SSM by scripts/fetch-clients.sh.
+# Log: /var/log/wg-bootstrap.log
 set -euo pipefail
 exec > >(tee -a /var/log/wg-bootstrap.log) 2>&1
 
 export DEBIAN_FRONTEND=noninteractive
 
-REGION="${region}"
-SSM_PREFIX="${ssm_prefix}"
 WG_PORT="${wg_port}"
 WG_MTU="${wg_mtu}"
 WG_SUBNET="${wg_subnet_cidr}"
 SERVER_IP="${server_wg_ip}"
 CLIENT_COUNT="${client_count}"
 DNS_UPSTREAM="${dns_upstream}"
-ENDPOINT="${public_endpoint}"
+IDLE_MINUTES="${idle_shutdown_minutes}"
 
 echo "=== wg-bootstrap starting at $(date -Is) ==="
 
+# This stack is ephemeral, so boot time is the thing to optimise. Only the
+# packages actually needed, no recommends, and no AWS CLI - the fetch script
+# reads the configs out over SSM from the operator's machine instead.
 apt-get update -y
-apt-get install -y wireguard wireguard-tools dnsmasq iptables curl unzip jq
+apt-get install -y --no-install-recommends wireguard-tools dnsmasq iptables
 
-# AWS CLI v2 is not in the Ubuntu archive; the official bundle matches uname -m
-# for both x86_64 and aarch64.
-if ! command -v aws >/dev/null 2>&1; then
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
-  unzip -q /tmp/awscliv2.zip -d /tmp
-  /tmp/aws/install
-  rm -rf /tmp/aws /tmp/awscliv2.zip
-fi
-export PATH="/usr/local/bin:$PATH"
+# No Elastic IP in this design: the address is assigned at launch, so the
+# instance has to look it up rather than have it templated in.
+IMDS_TOKEN="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")"
+ENDPOINT="$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+  "http://169.254.169.254/latest/meta-data/public-ipv4")"
+echo "Public endpoint: $ENDPOINT:$WG_PORT"
 
 # Route client traffic, and blackhole IPv6 rather than letting it leak around
 # the tunnel to the client's real ISP address.
@@ -97,14 +97,8 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 CLIENTCONF
 
-  aws ssm put-parameter \
-    --region "$REGION" \
-    --name "$SSM_PREFIX/clients/$NAME" \
-    --description "WireGuard client config for $NAME" \
-    --type SecureString \
-    --value "$(cat "clients/$NAME.conf")" \
-    --overwrite
-  echo "published $NAME ($CLIENT_ADDR)"
+  rm -f "clients/$NAME.key" "clients/$NAME.pub"
+  echo "generated $NAME ($CLIENT_ADDR)"
 done
 
 # Resolver for tunnel clients. bind-dynamic lets dnsmasq attach to wg0 whenever
@@ -124,19 +118,64 @@ systemctl enable --now wg-quick@wg0
 systemctl restart dnsmasq
 systemctl enable dnsmasq
 
-aws ssm put-parameter \
-  --region "$REGION" \
-  --name "$SSM_PREFIX/server-public-key" \
-  --type String \
-  --value "$SERVER_PUB" \
-  --overwrite
+# Dead man's switch. The instance is billed by the second and is meant to live
+# only as long as a match, so if no peer has completed a handshake recently it
+# shuts itself down - which terminates it, since the instance is launched with
+# instance_initiated_shutdown_behavior = terminate.
+if [ "$IDLE_MINUTES" -gt 0 ]; then
+  cat > /usr/local/bin/wg-idle-check <<IDLECHECK
+#!/usr/bin/env bash
+set -euo pipefail
+IDLE_SECONDS=\$(( $IDLE_MINUTES * 60 ))
 
-aws ssm put-parameter \
-  --region "$REGION" \
-  --name "$SSM_PREFIX/status" \
-  --type String \
-  --value "ready endpoint=$ENDPOINT:$WG_PORT clients=$CLIENT_COUNT booted=$(date -Is)" \
-  --overwrite
+latest=0
+while read -r _peer ts; do
+  [ -n "\$ts" ] && [ "\$ts" -gt "\$latest" ] && latest="\$ts"
+done < <(wg show wg0 latest-handshakes)
+
+if [ "\$latest" -eq 0 ]; then
+  # Nobody has ever connected; measure against uptime so a server nobody uses
+  # still cleans itself up.
+  idle_for=\$(cut -d. -f1 /proc/uptime)
+else
+  idle_for=\$(( \$(date +%s) - latest ))
+fi
+
+if [ "\$idle_for" -ge "\$IDLE_SECONDS" ]; then
+  logger -t wg-idle-check "idle for \$idle_for seconds, shutting down"
+  systemctl poweroff
+else
+  logger -t wg-idle-check "active, idle for \$idle_for seconds"
+fi
+IDLECHECK
+  chmod 755 /usr/local/bin/wg-idle-check
+
+  cat > /etc/systemd/system/wg-idle-check.service <<'IDLESERVICE'
+[Unit]
+Description=Terminate the VPN instance once no client has used it recently
+After=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wg-idle-check
+IDLESERVICE
+
+  cat > /etc/systemd/system/wg-idle-check.timer <<'IDLETIMER'
+[Unit]
+Description=Periodic idle check for the VPN instance
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+IDLETIMER
+
+  systemctl daemon-reload
+  systemctl enable --now wg-idle-check.timer
+  echo "idle shutdown armed at $IDLE_MINUTES minutes"
+fi
 
 touch /var/lib/wg-bootstrap.done
 echo "=== wg-bootstrap complete at $(date -Is) ==="

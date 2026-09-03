@@ -3,11 +3,6 @@ variable "name" {
   type        = string
 }
 
-variable "region" {
-  description = "AWS region. Used inside user_data for the SSM endpoint."
-  type        = string
-}
-
 variable "instance_type" {
   description = "EC2 instance type. Must match the architecture of the resolved AMI (arm64 by default)."
   type        = string
@@ -83,6 +78,17 @@ variable "ssh_key_name" {
   description = "Existing EC2 key pair name."
   type        = string
   default     = null
+}
+
+variable "idle_shutdown_minutes" {
+  description = <<-EOT
+    Terminate the instance after this many minutes with no WireGuard handshake
+    from any client. This is the cost guardrail for the ephemeral workflow: an
+    instance you forget to destroy cleans itself up. Set to 0 to disable, which
+    also changes shutdown behaviour from terminate to stop.
+  EOT
+  type        = number
+  default     = 30
 }
 
 variable "root_volume_size" {

@@ -40,6 +40,17 @@ variable "client_count" {
   }
 }
 
+variable "idle_shutdown_minutes" {
+  description = <<-EOT
+    Terminate the instance after this many minutes with no client handshake.
+    This is the cost guardrail: a stack you forget to destroy after a match
+    cleans itself up. Note that a device left connected keeps sending
+    keepalives, so switch the VPN off when you are done. 0 disables it.
+  EOT
+  type        = number
+  default     = 30
+}
+
 variable "allowed_vpn_cidrs" {
   description = <<-EOT
     Source CIDRs allowed to reach the WireGuard UDP port. WireGuard silently

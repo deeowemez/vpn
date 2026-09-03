@@ -3,12 +3,18 @@
 region = "ap-southeast-2" # Sydney
 name   = "vpn-syd"
 
-# t4g.small handles a couple of 1080p streams comfortably. t4g.medium or
-# c6gn.medium if you are pushing 4K or several clients at once.
+# t4g.small handles a couple of 1080p streams comfortably. Step up to
+# t4g.medium only if several people are watching at once.
 instance_type = "t4g.small"
 
-# One config per device you want to connect.
+# One config per device you want to connect. Keys are regenerated on every
+# rebuild, so keep this to the devices you actually use.
 client_count = 3
+
+# Terminate the instance after this many minutes with no client handshake.
+# The cost guardrail for the build-per-match workflow: switch the VPN off on
+# your device when the match ends and the server disposes of itself.
+idle_shutdown_minutes = 30
 
 # WireGuard drops unauthenticated packets, so a wide-open UDP port is
 # acceptable. Narrow it if your ISP prefix is stable.

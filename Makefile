@@ -1,7 +1,42 @@
 REGION ?= ap-southeast-2
-NAME   ?= vpn-syd
 
-.PHONY: init plan apply clients destroy fmt validate shell status clean-params
+.PHONY: match down up clients status ip shell init fmt validate plan destroy
+
+# --- match-day workflow -----------------------------------------------------
+
+# Build the server and pull the client configs. Takes ~2 minutes end to end,
+# so start it before kickoff.
+match: up clients
+
+up:
+	terraform apply -auto-approve
+
+clients:
+	./scripts/fetch-clients.sh $(REGION) $$(terraform output -raw instance_id)
+
+# Tear everything down. Safe to run even if the instance already terminated
+# itself on the idle timer - Terraform reconciles either way.
+down:
+	terraform destroy -auto-approve
+	rm -rf clients
+
+# --- inspection -------------------------------------------------------------
+
+status:
+	@id=$$(terraform output -raw instance_id 2>/dev/null); \
+	if [ -z "$$id" ]; then echo "Nothing deployed."; else \
+	  aws ec2 describe-instances --region $(REGION) --instance-ids $$id \
+	    --query 'Reservations[0].Instances[0].{State:State.Name,IP:PublicIpAddress,Launched:LaunchTime}' \
+	    --output table; \
+	fi
+
+ip:
+	@terraform output -raw public_ip
+
+shell:
+	aws ssm start-session --region $(REGION) --target $$(terraform output -raw instance_id)
+
+# --- terraform --------------------------------------------------------------
 
 init:
 	terraform init
@@ -15,27 +50,4 @@ validate: init
 plan:
 	terraform plan
 
-apply:
-	terraform apply
-
-# Pull the generated client configs once the instance has booted.
-clients:
-	./scripts/fetch-clients.sh $(REGION) /$(NAME)/wireguard
-
-status:
-	aws ssm get-parameter --region $(REGION) --name /$(NAME)/wireguard/status \
-		--query 'Parameter.Value' --output text
-
-shell:
-	aws ssm start-session --region $(REGION) --target $$(terraform output -raw instance_id)
-
-destroy:
-	terraform destroy
-
-# The instance publishes client configs itself, so Terraform does not own them
-# and destroy leaves them behind. Remove them explicitly.
-clean-params:
-	aws ssm get-parameters-by-path --region $(REGION) --path /$(NAME)/wireguard --recursive \
-		--query 'Parameters[].Name' --output text \
-	| tr '\t' '\n' | grep . \
-	| xargs -r -n10 aws ssm delete-parameters --region $(REGION) --names
+destroy: down
